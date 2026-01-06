@@ -13,10 +13,10 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="Antigravity Pro v3.2.3", layout="wide")
 st_autorefresh(interval=30000, key="datarefresh") 
 
-# --- CONFIGURACIÓN CALLMEBOT (Activo desde el 10 de Enero) ---
-WA_API_KEY = "TU_KEY_DE_CALLMEBOT" 
-WA_PHONE = "569XXXXXXXX" 
-# ------------------------------------------------------------
+# --- CONFIGURACIÓN CALLMEBOT (Suspendido hasta el 10/01) ---
+WA_PHONE = "569XXXXXXXX" # Reemplaza con tu número
+WA_API_KEY = "XXXXXX"    # Reemplaza con tu clave
+# ---------------------------------------------------------
 
 tz_chile = pytz.timezone('America/Santiago')
 hora_chile = datetime.now(tz_chile)
@@ -62,7 +62,7 @@ if not df_market.empty:
         current_gold = df_market[gold_col].iloc[-1]
         current_cop = df_market[cop_col].iloc[-1]
 
-        # CÁLCULO DE FEATURES
+        # CÁLCULO DE PREDICCIÓN IA
         tmp = df_market.tail(35).copy()
         tmp['Ret_USD'] = tmp[usd_col].pct_change()
         tmp['Ret_Gold'] = tmp[gold_col].pct_change()
@@ -77,12 +77,12 @@ if not df_market.empty:
 
         # MÉTRICAS
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Dólar", f"${current_usd:,.2f}")
-        m2.metric("Oro", f"${current_gold:,.1f}")
-        m3.metric("Cobre", f"${current_cop:,.2f}")
-        m4.metric("Confianza", f"{confidence*100:.1f}%")
+        m1.metric("USD/CLP", f"${current_usd:,.2f}")
+        m2.metric("ORO", f"${current_gold:,.1f}")
+        m3.metric("COBRE", f"${current_cop:,.2f}")
+        m4.metric("IA Confianza", f"{confidence*100:.1f}%")
 
-        # --- GRÁFICO DE TRIPLE EJE (CORRECCIÓN DEFINITIVA title_font) ---
+        # --- GRÁFICO DE TRIPLE EJE (SOLUCIÓN AL VALUEERROR) ---
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_market.index, y=df_market[usd_col], name="Dólar", line=dict(color='#00ff00', width=3)))
         fig.add_trace(go.Scatter(x=df_market.index, y=df_market[gold_col], name="Oro", line=dict(color='#ffbf00', dash='dot'), yaxis="y2"))
@@ -119,7 +119,7 @@ if not df_market.empty:
             st.success("🔥 SEÑAL VERDE: COMPRA")
             st.components.v1.html("""<audio autoplay><source src="https://www.soundjay.com/buttons/beep-07a.mp3" type="audio/mp3"></audio>""", height=0)
             
-            # Alerta WhatsApp (CallMeBot suspendido hasta el 10/01)
+            # Alerta WA (Legacy CallMeBot)
             if 'last_wa' not in st.session_state or (datetime.now() - st.session_state.last_wa).seconds > 300:
                 msg = f"🚀*ANTIGRAVITY*%0AVerde Detectado%0AEntrada: ${current_usd:,.2f}"
                 enviar_whatsapp(msg)
@@ -128,11 +128,9 @@ if not df_market.empty:
         elif es_hora:
             st.warning("🟡 AMARILLO: Analizando...")
         else:
-            st.error("🔴 MERCADO CERRADO")
+            st.error("🔴 MERCADO CERRADO (Opera 10:00 - 13:00)")
 
 # SIDEBAR
 st.sidebar.title("Infraestructura")
-st.sidebar.warning("WA: CallMeBot reabre el 10/01")
-if st.sidebar.button("Test CallMeBot"):
-    enviar_whatsapp("Prueba+v3.2.3")
-    st.sidebar.write("Nota: No funcionará hasta el 10 de Enero")
+st.sidebar.warning("WhatsApp: CallMeBot reabre el 10/01")
+if st.sidebar.button("Re-entrenar Vista"): st.rerun()
