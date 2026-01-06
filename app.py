@@ -10,13 +10,13 @@ import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
 # 1. CONFIGURACIÓN E INFRAESTRUCTURA
-st.set_page_config(page_title="Antigravity Pro v3.2.2", layout="wide")
-st_autorefresh(interval=30000, key="datarefresh") # Refresco cada 30s
+st.set_page_config(page_title="Antigravity Pro v3.2.3", layout="wide")
+st_autorefresh(interval=30000, key="datarefresh") 
 
-# --- CONFIGURACIÓN DE NOTIFICACIONES (TEXTMEBOT) ---
-TM_API_KEY = "TU_NUEVA_KEY_AQUI" # Reemplaza con la clave de TextMeBot
-MI_TELEFONO = "56997009611"     # Tu número en formato internacional
-# ---------------------------------------------------
+# --- CONFIGURACIÓN CALLMEBOT (Activo desde el 10 de Enero) ---
+WA_API_KEY = "TU_KEY_DE_CALLMEBOT" 
+WA_PHONE = "569XXXXXXXX" 
+# ------------------------------------------------------------
 
 tz_chile = pytz.timezone('America/Santiago')
 hora_chile = datetime.now(tz_chile)
@@ -29,7 +29,8 @@ def load_brain():
     return None
 
 def enviar_whatsapp(mensaje):
-    url = f"https://api.textmebot.com/send.php?recipient={MI_TELEFONO}&apikey={TM_API_KEY}&text={mensaje}"
+    # Revertido a la API de CallMeBot
+    url = f"https://api.callmebot.com/whatsapp.php?phone={WA_PHONE}&text={mensaje}&apikey={WA_API_KEY}"
     try: requests.get(url, timeout=5)
     except: pass
 
@@ -43,9 +44,9 @@ def fetch_data():
         return df
     except: return pd.DataFrame()
 
-# --- INTERFAZ DE USUARIO ---
-st.title("🚀 Antigravity Pro v3.2.2 - Sentinel Patch")
-st.caption(f"📍 Macul, Chile | {hora_chile.strftime('%H:%M:%S')} | Triple Eje v3.2")
+# --- INTERFAZ ---
+st.title("🚀 Antigravity Pro v3.2.3")
+st.caption(f"📍 Macul, Chile | {hora_chile.strftime('%H:%M:%S')} | Triple Eje (Fix Plotly)")
 
 model = load_brain()
 df_market = fetch_data()
@@ -61,13 +62,7 @@ if not df_market.empty:
         current_gold = df_market[gold_col].iloc[-1]
         current_cop = df_market[cop_col].iloc[-1]
 
-        # MÉTRICAS
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("USD/CLP", f"${current_usd:,.2f}")
-        m2.metric("ORO", f"${current_gold:,.1f}")
-        m3.metric("COBRE", f"${current_cop:,.2f}")
-
-        # PREDICCIÓN IA
+        # CÁLCULO DE FEATURES
         tmp = df_market.tail(35).copy()
         tmp['Ret_USD'] = tmp[usd_col].pct_change()
         tmp['Ret_Gold'] = tmp[gold_col].pct_change()
@@ -79,54 +74,65 @@ if not df_market.empty:
         if model and not features.isnull().values.any():
             pred = model.predict(features)[0]
             confidence = model.predict_proba(features).max()
-        
-        m4.metric("CONFIANZA", f"{confidence*100:.1f}%")
 
-        # --- GRÁFICO DE TRIPLE EJE CORREGIDO (SINTAXIS 2024) ---
+        # MÉTRICAS
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Dólar", f"${current_usd:,.2f}")
+        m2.metric("Oro", f"${current_gold:,.1f}")
+        m3.metric("Cobre", f"${current_cop:,.2f}")
+        m4.metric("Confianza", f"{confidence*100:.1f}%")
+
+        # --- GRÁFICO DE TRIPLE EJE (CORRECCIÓN DEFINITIVA title_font) ---
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_market.index, y=df_market[usd_col], name="Dólar", line=dict(color='#00ff00', width=3)))
         fig.add_trace(go.Scatter(x=df_market.index, y=df_market[gold_col], name="Oro", line=dict(color='#ffbf00', dash='dot'), yaxis="y2"))
         fig.add_trace(go.Scatter(x=df_market.index, y=df_market[cop_col], name="Cobre", line=dict(color='#ff4b4b', dash='dash'), yaxis="y3"))
 
         fig.update_layout(
-            template="plotly_dark", height=450, margin=dict(l=50, r=150, t=20, b=20),
-            xaxis=dict(domain=[0, 0.8]),
-            yaxis=dict(title="Dólar ($)", title_font=dict(color="#00ff00"), tick_font=dict(color="#00ff00")),
-            yaxis2=dict(title="Oro ($)", title_font=dict(color="#ffbf00"), tick_font=dict(color="#ffbf00"), anchor="free", overlaying="y", side="right", position=0.85),
-            yaxis3=dict(title="Cobre ($)", title_font=dict(color="#ff4b4b"), tick_font=dict(color="#ff4b4b"), anchor="free", overlaying="y", side="right", position=0.95),
+            template="plotly_dark", height=450, margin=dict(l=50, r=160, t=30, b=20),
+            xaxis=dict(domain=[0, 0.75]),
+            yaxis=dict(
+                title="Dólar ($)", 
+                title_font=dict(color="#00ff00"), 
+                tick_font=dict(color="#00ff00")
+            ),
+            yaxis2=dict(
+                title="Oro ($)", 
+                title_font=dict(color="#ffbf00"), 
+                tick_font=dict(color="#ffbf00"), 
+                anchor="free", overlaying="y", side="right", position=0.82
+            ),
+            yaxis3=dict(
+                title="Cobre ($)", 
+                title_font=dict(color="#ff4b4b"), 
+                tick_font=dict(color="#ff4b4b"), 
+                anchor="free", overlaying="y", side="right", position=0.92
+            ),
             showlegend=True
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- PANEL DE DIAGNÓSTICO ---
-        with st.expander("🔍 ¿Por qué este color? (Análisis IA)"):
-            if confidence < 0.65: st.write(f"❌ Confianza insuficiente ({confidence*100:.1f}%)")
-            if current_cop > df_market[cop_col].iloc[0]: st.write("⚠️ Cobre al alza frena la subida")
-            if not (10 <= hora_chile.hour < 13): st.write("🔴 Fuera de ventana de liquidez")
-
-        # --- LÓGICA DE SEMÁFORO Y ALERTAS ---
+        # --- SEMÁFORO ---
         st.divider()
         es_hora = 10 <= hora_chile.hour < 13
-        
         if pred == 1 and confidence > 0.65 and es_hora:
-            st.success("🔥 SEÑAL VERDE: COMPRA DETECTADA")
+            st.success("🔥 SEÑAL VERDE: COMPRA")
             st.components.v1.html("""<audio autoplay><source src="https://www.soundjay.com/buttons/beep-07a.mp3" type="audio/mp3"></audio>""", height=0)
             
-            # Alerta WhatsApp (Máximo 1 cada 5 min)
+            # Alerta WhatsApp (CallMeBot suspendido hasta el 10/01)
             if 'last_wa' not in st.session_state or (datetime.now() - st.session_state.last_wa).seconds > 300:
-                msg = f"🚀*ANTIGRAVITY*%0ASeñal VERDE%0AEntrada: ${current_usd:,.2f}%0AConfianza: {confidence*100:.1f}%"
+                msg = f"🚀*ANTIGRAVITY*%0AVerde Detectado%0AEntrada: ${current_usd:,.2f}"
                 enviar_whatsapp(msg)
                 st.session_state.last_wa = datetime.now()
-            
             st.balloons()
         elif es_hora:
-            st.warning("🟡 AMARILLO: Analizando mercado...")
+            st.warning("🟡 AMARILLO: Analizando...")
         else:
-            st.error("🔴 MERCADO CERRADO (Opera de 10:00 a 13:00)")
+            st.error("🔴 MERCADO CERRADO")
 
 # SIDEBAR
-st.sidebar.title("Infraestructura TI")
-st.sidebar.info(f"Cerebro ML: {'Activo' if model else 'Error'}")
-if st.sidebar.button("Test WA"):
-    enviar_whatsapp("Prueba+de+Sentinel+v3.2.2")
-    st.sidebar.success("Mensaje enviado!")
+st.sidebar.title("Infraestructura")
+st.sidebar.warning("WA: CallMeBot reabre el 10/01")
+if st.sidebar.button("Test CallMeBot"):
+    enviar_whatsapp("Prueba+v3.2.3")
+    st.sidebar.write("Nota: No funcionará hasta el 10 de Enero")
