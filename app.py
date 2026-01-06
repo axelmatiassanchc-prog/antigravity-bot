@@ -15,7 +15,7 @@ st_autorefresh(interval=30000, key="datarefresh") # Refresco cada 30s
 
 # Configuración de WhatsApp (CallMeBot)
 # Reemplaza con tus datos reales obtenidos del bot
-WA_PHONE = "569XXXXXXXX" 
+WA_PHONE = "56997009611" 
 WA_API_KEY = "XXXXXX"
 
 tz_chile = pytz.timezone('America/Santiago')
@@ -138,3 +138,4 @@ if not df_market.empty:
 st.sidebar.title("Infraestructura")
 st.sidebar.info(f"Cerebro: {'Activo' if model else 'Error'}")
 if st.sidebar.button("Forzar Refresco"): st.rerun()
+
