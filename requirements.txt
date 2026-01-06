@@ -5,3 +5,4 @@ plotly
 scikit-learn
 pytz
 joblib
+streamlit-autorefresh
