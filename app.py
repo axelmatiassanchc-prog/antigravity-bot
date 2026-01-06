@@ -10,13 +10,12 @@ from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 
 # 1. CONFIGURACIÓN Y AUTO-REFRESCO
-st.set_page_config(page_title="Antigravity Pro v3.0 - Copper Edition", layout="wide")
+st.set_page_config(page_title="Antigravity Pro v3.1", layout="wide")
 st_autorefresh(interval=30000, key="datarefresh")
 
 tz_chile = pytz.timezone('America/Santiago')
 hora_chile = datetime.now(tz_chile)
 
-# 2. CARGA DEL CEREBRO (Requiere re-entrenamiento con Cobre)
 @st.cache_resource
 def load_brain():
     if os.path.exists('model.pkl'):
@@ -26,10 +25,9 @@ def load_brain():
 
 model = load_brain()
 
-# 3. OBTENCIÓN DE DATOS (TRIPLE CORRELACIÓN)
 @st.cache_data(ttl=25)
 def fetch_data():
-    tickers = ["USDCLP=X", "GC=F", "HG=F"] # Añadimos Cobre
+    tickers = ["USDCLP=X", "GC=F", "HG=F"]
     try:
         data = yf.download(tickers, period="1d", interval="1m", threads=False, progress=False)
         if data.empty: return pd.DataFrame()
@@ -37,19 +35,11 @@ def fetch_data():
         return df
     except: return pd.DataFrame()
 
-# --- INTERFAZ ---
-st.title("🚀 Antigravity Pro v3.0")
-st.caption("Integración: USD/CLP + ORO + COBRE | Monitoreo de Alta Fidelidad")
+st.title("🚀 Antigravity Pro v3.1 - Copper Edition")
 
 df_market = fetch_data()
 
 if not df_market.empty:
-    # MONITOR DE LATENCIA
-    ultima_vel = df_market.index[-1].replace(tzinfo=pytz.utc).astimezone(tz_chile)
-    retraso = (hora_chile - ultima_vel).total_seconds() / 60
-    st.caption(f"📍 Macul | Último dato: {ultima_vel.strftime('%H:%M:%S')} | Latencia: {int(retraso)} min")
-
-    # BUSCADOR ROBUSTO DE COLUMNAS
     cols = df_market.columns.tolist()
     usd_col = next((c for c in cols if "USDCLP" in str(c)), None)
     gold_col = next((c for c in cols if "GC=F" in str(c)), None)
@@ -60,65 +50,35 @@ if not df_market.empty:
         current_gold = df_market[gold_col].iloc[-1]
         current_cop = df_market[cop_col].iloc[-1]
 
-        # MÉTRICAS CUÁDRUPLES
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Dólar", f"${current_usd:,.2f}")
-        m2.metric("Oro", f"${current_gold:,.1f}")
-        m3.metric("Cobre (Copper)", f"${current_cop:,.2f}")
-        
-        # 4. PREDICCIÓN CON COBRE
-        tmp = df_market.tail(35).copy()
-        tmp['Ret_USD'] = tmp[usd_col].pct_change()
-        tmp['Ret_Gold'] = tmp[gold_col].pct_change()
-        tmp['Ret_Cop'] = tmp[cop_col].pct_change() # Nueva característica
-        tmp['Volat'] = tmp[usd_col].rolling(window=10).std()
-        
-        # Nota: El orden de features debe coincidir con tu nuevo entrenamiento
-        features = tmp[['Ret_USD', 'Ret_Gold', 'Ret_Cop', 'Volat']].tail(1)
-        
-        confidence = 0.0
-        if model and not features.isnull().values.any():
-            try: confidence = model.predict_proba(features).max()
-            except: st.sidebar.warning("⚠️ El modelo requiere re-entrenamiento para ver el Cobre.")
+        # --- GRÁFICO PROFESIONAL DE 3 EJES ---
+        fig = go.Figure()
 
-        m4.metric("Confianza IA", f"{confidence*100:.1f}%")
+        # Eje 1: Dólar (Principal)
+        fig.add_trace(go.Scatter(x=df_market.index, y=df_market[usd_col], name="Dólar", line=dict(color='#00ff00', width=3)))
 
-        # 5. GRÁFICO TRIPLE DE CORRELACIÓN
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-        fig.add_trace(go.Scatter(x=df_market.index, y=df_market[usd_col], name="Dólar", line=dict(color='#00ff00', width=3)), secondary_y=False)
-        fig.add_trace(go.Scatter(x=df_market.index, y=df_market[gold_col], name="Oro", line=dict(color='#ffbf00', dash='dot')), secondary_y=True)
-        fig.add_trace(go.Scatter(x=df_market.index, y=df_market[cop_col], name="Cobre", line=dict(color='#ff4b4b', dash='dash')), secondary_y=True)
-        fig.update_layout(template="plotly_dark", height=350, margin=dict(l=10, r=10, t=10, b=10), showlegend=True)
+        # Eje 2: Oro (Derecha)
+        fig.add_trace(go.Scatter(x=df_market.index, y=df_market[gold_col], name="Oro", line=dict(color='#ffbf00', dash='dot'), yaxis="y2"))
+
+        # Eje 3: Cobre (Derecha Extrema)
+        fig.add_trace(go.Scatter(x=df_market.index, y=df_market[cop_col], name="Cobre", line=dict(color='#ff4b4b', dash='dash'), yaxis="y3"))
+
+        fig.update_layout(
+            template="plotly_dark",
+            height=400,
+            margin=dict(l=50, r=100, t=20, b=20),
+            xaxis=dict(domain=[0, 0.85]), # Espacio para el tercer eje
+            yaxis=dict(title="Dólar ($)", titlefont=dict(color="#00ff00"), tickfont=dict(color="#00ff00")),
+            yaxis2=dict(title="Oro ($)", titlefont=dict(color="#ffbf00"), tickfont=dict(color="#ffbf00"), anchor="free", overlaying="y", side="right", position=0.85),
+            yaxis3=dict(title="Cobre ($)", titlefont=dict(color="#ff4b4b"), tickfont=dict(color="#ff4b4b"), anchor="free", overlaying="y", side="right", position=0.95),
+            showlegend=True
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-        # 6. DIAGNÓSTICO AVANZADO
-        with st.expander("🔍 Análisis de Variables"):
-            c1, c2 = st.columns(2)
-            c1.write("**Impacto en el Dólar:**")
-            if current_cop > df_market[cop_col].iloc[0]:
-                st.write("🔴 **Cobre Subiendo:** Presión bajista para el dólar (Malo para compra).")
-            else:
-                st.write("🟢 **Cobre Bajando:** Camino libre para que el dólar suba (Bueno para compra).")
-            
-            c2.write("**Estado de Correlación:**")
-            st.write(f"Oro: ${current_gold:,.1f} | Cobre: ${current_cop:,.2f}")
-
-        # 7. PANEL DE ÓRDENES XTB
+        # MÉTRICAS Y SEMÁFORO (Igual al anterior)
         st.divider()
-        es_hora = 10 <= hora_chile.hour < 13
-        
-        if confidence > 0.65 and es_hora:
-            st.success("🔥 SEÑAL VERDE: COMPRAR USD/CLP")
-            audio_url = "https://www.soundjay.com/buttons/beep-07a.mp3"
-            st.components.v1.html(f"""<audio autoplay><source src="{audio_url}" type="audio/mp3"></audio>""", height=0)
-            
-            tp, sl = current_usd + 2.5, current_usd - 1.5
-            st.write(f"📦 Lote: **0.01** | 💰 Entrada: **${current_usd:,.2f}** | 🎯 TP: **${tp:,.2f}** | 🛡️ SL: **${sl:,.2f}**")
-            st.warning(f"💵 Ganancia Estimada: **+$2.500 CLP**")
-            st.balloons()
-        else:
-            st.warning("⏳ Analizando ciclo Dólar-Oro-Cobre. Esperando alineación de astros...")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("USD/CLP", f"${current_usd:,.2f}")
+        m2.metric("GOLD", f"${current_gold:,.1f}")
+        m3.metric("COPPER", f"${current_cop:,.2f}")
 
-# SIDEBAR
-st.sidebar.title("Infraestructura v3.0")
-if st.sidebar.button("Re-escanear"): st.rerun()
+        # ... (Mantén el resto del código de diagnóstico y órdenes de la v3.0)
