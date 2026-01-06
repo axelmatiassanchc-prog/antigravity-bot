@@ -1,0 +1,34 @@
+name: Reentrenamiento Semanal Antigravity
+
+on:
+  schedule:
+    # Se ejecuta todos los domingos a las 23:00 UTC (aprox 20:00 hora Chile)
+    - cron: '0 23 * * 0'
+  workflow_dispatch: # Permite que lo ejecutemos a mano ahora para probar
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Instalar dependencias
+        run: |
+          pip install yfinance pandas scikit-learn joblib
+
+      - name: Ejecutar reentrenamiento
+        run: python train_model.py
+
+      - name: Guardar cambios del modelo
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add model.pkl
+          git commit -m "🤖 Actualización automática del modelo [Skip CI]" || echo "No hay cambios para subir"
+          git push
