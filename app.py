@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
 # 1. CONFIGURACIÓN E INFRAESTRUCTURA
-st.set_page_config(page_title="Antigravity Pro v3.7.0", layout="wide")
+st.set_page_config(page_title="Antigravity Pro v3.7.1", layout="wide")
 st_autorefresh(interval=30000, key="datarefresh") 
 
 tz_chile = pytz.timezone('America/Santiago')
@@ -65,7 +65,7 @@ capital_total = 50000
 
 if not df_market.empty:
     usd_val = df_market.iloc[-1].filter(like="USDCLP").iloc[0]
-    # Calculadora de Margen v3.3.1 re-integrada
+    # Calculadora de Margen
     st.sidebar.write("**Margen Sugerido (1:100):**")
     m_verde = (0.01 * 1000 * usd_val) / 100
     m_super = (0.03 * 1000 * usd_val) / 100
@@ -82,7 +82,7 @@ if st.sidebar.button("🔇 SILENCIO INMEDIATO"):
 # ---------------------------------------------------------
 # DASHBOARD PRINCIPAL
 # ---------------------------------------------------------
-st.title("🚀 Antigravity Pro v3.7.0")
+st.title("🚀 Antigravity Pro v3.7.1")
 
 if not df_market.empty:
     usd_col = next((c for c in df_market.columns if "USDCLP" in str(c)), None)
@@ -132,14 +132,18 @@ if not df_market.empty:
     es_hora = 10 <= hora_chile.hour < 13
     conf_usd, conf_gold = 0.78, 0.72 # Simulación Súper Verde activa
 
+    # Valores por defecto para el registro
+    current_tp, current_sl = 0.0, 0.0
+    current_type = "Ninguna"
+
     if es_hora:
-        # LÓGICA SÚPER VERDE
         if conf_usd > 0.75 and conf_gold > 0.70:
-            tp, sl = usd_actual + 3.50, usd_actual - 2.00
+            current_type = "Super Verde"
+            current_tp, current_sl = usd_actual + 3.50, usd_actual - 2.00
             st.info("💎 SÚPER VERDE: 0.03 Lotes")
             c1, c2, c3 = st.columns([2,2,1])
-            c1.success(f"📈 TAKE PROFIT: **{tp:,.2f}**")
-            c2.error(f"🛡️ STOP LOSS: **{sl:,.2f}**")
+            c1.success(f"📈 TAKE PROFIT: **{current_tp:,.2f}**")
+            c2.error(f"🛡️ STOP LOSS: **{current_sl:,.2f}**")
             if c3.button("STOP 🔇"):
                 st.session_state.alarma_activa = False
                 st.rerun()
@@ -147,20 +151,20 @@ if not df_market.empty:
             if st.session_state.alarma_activa:
                 st.components.v1.html("""<audio autoplay loop><source src="https://www.soundjay.com/buttons/beep-01a.mp3" type="audio/mp3"></audio>""", height=0)
         
-        # LÓGICA VERDE SIMPLE
         elif conf_usd > 0.65:
-            tp, sl = usd_actual + 2.50, usd_actual - 1.50
+            current_type = "Verde"
+            current_tp, current_sl = usd_actual + 2.50, usd_actual - 1.50
             st.success("🟢 SEÑAL VERDE: 0.01 Lotes")
             c1, c2 = st.columns(2)
-            c1.success(f"📈 TP: {tp:,.2f}")
-            c2.warning(f"🛡️ SL: {sl:,.2f}")
+            c1.success(f"📈 TP: {current_tp:,.2f}")
+            c2.warning(f"🛡️ SL: {current_sl:,.2f}")
         else:
             st.warning("🟡 MODO SENTINELA: Analizando correlaciones...")
     else:
         st.error("🔴 MERCADO CERRADO (10:00 - 13:00)")
 
-    # REGISTRO DE BITÁCORA
+    # REGISTRO DE BITÁCORA - FIX st.toast
     st.sidebar.divider()
     if st.sidebar.button(f"💾 Registrar Trade {operador_activo}"):
-        log_trade(operador_activo, "USD/CLP", "Super Verde" if conf_usd > 0.75 else "Verde", conf_usd, usd_actual, 0, 0)
-        st.sidebar.toast("¡Datos guardados!")
+        log_trade(operador_activo, "USD/CLP", current_type, conf_usd, usd_actual, current_tp, current_sl)
+        st.toast(f"✅ Trade de {operador_activo} guardado en CSV") # Línea corregida
