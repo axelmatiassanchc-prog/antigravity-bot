@@ -1,183 +1,117 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import joblib
-import os
 import requests
+import time
+import os
 from datetime import datetime
 import pytz
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# 1. INFRAESTRUCTURA DE RED Y CONFIGURACIÓN
-st.set_page_config(page_title="Antigravity Pro v4.5.0", layout="wide")
-st_autorefresh(interval=2000, key="datarefresh") # 2 segundos para Eagle Eye
+# 1. SETUP DE SEGURIDAD
+st.set_page_config(page_title="SENTINEL v7.0 - REAL", layout="wide", page_icon="🛡️")
+st_autorefresh(interval=3000, key="datarefresh") # 3s para estabilidad en tiempo real
 
+FINNHUB_KEY = "d5fq0d9r01qnjhodsn8gd5fq0d9r01qnjhodsn90"
 tz_chile = pytz.timezone('America/Santiago')
 hora_chile = datetime.now(tz_chile)
 
-# API KEY INTEGRADA Y PERSISTENTE
-FINNHUB_KEY = "d5fq0d9r01qnjhodsn8gd5fq0d9r01qnjhodsn90"
+# 2. MOTOR DE DATOS HÍBRIDO (El "Corazón" del Sistema)
+@st.cache_data(ttl=2)
+def fetch_fast_usd():
+    try: # Intento Turbo primero
+        r = requests.get(f"https://finnhub.io/api/v1/quote?symbol=FX:USDCLP&token={FINNHUB_KEY}", timeout=1.5).json()
+        return float(r.get('c', 0.0))
+    except:
+        return 0.0
 
-if 'alarma_activa' not in st.session_state:
-    st.session_state.alarma_activa = True
-
-@st.cache_resource
-def load_brain():
-    if os.path.exists('model.pkl'):
-        try: return joblib.load('model.pkl')
-        except: return None
-    return None
-
-# 2. MOTOR DE DATOS ROBUSTO CON FAILOVER Y CACHÉ DIFERENCIADO
-@st.cache_data(ttl=2) # Prioridad Máxima: Dólar
-def get_usd_price(engine):
-    price = 0.0
-    if engine == "Turbo (Finnhub API)":
-        try:
-            url = f"https://finnhub.io/api/v1/quote?symbol=FX:USDCLP&token={FINNHUB_KEY}"
-            r = requests.get(url, timeout=2).json()
-            price = float(r.get('c', 0.0))
-        except: price = 0.0
-    
-    if price <= 0: # Fallover a Yahoo si Finnhub falla
-        try:
-            data = yf.download("USDCLP=X", period="1d", interval="1m", progress=False)
-            if not data.empty:
-                val = data['Close'].iloc[-1]
-                price = float(val.iloc[0]) if hasattr(val, "__iter__") else float(val)
-        except: price = 0.0
-    return price
-
-@st.cache_data(ttl=30) # Prioridad Media: Commodities e Historial
-def get_global_data(engine):
-    results = {"oro": 0.0, "cobre": 0.0, "euro": 0.0, "df_hist": pd.DataFrame()}
-    # Descarga base para gráfico
-    tickers = {"USDCLP=X": "usd", "GC=F": "oro", "HG=F": "cobre", "EURUSD=X": "euro"}
+@st.cache_data(ttl=30)
+def fetch_market_context():
+    res = {"oro": 0.0, "cobre": 0.0, "euro": 0.0, "std": 0.0, "df": pd.DataFrame()}
     try:
-        raw = yf.download(list(tickers.keys()), period="1d", interval="1m", progress=False)
+        raw = yf.download(["USDCLP=X", "GC=F", "HG=F", "EURUSD=X"], period="1d", interval="1m", progress=False)
         if not raw.empty:
-            closes = raw['Close'].ffill()
-            results["df_hist"] = closes
-            for t, key in tickers.items():
-                if t in closes.columns:
-                    val = closes[t].dropna().iloc[-1] # Fix para evitar $nan
-                    results[key] = float(val)
+            c = raw['Close'].ffill()
+            res["df"] = c
+            res["oro"] = float(c["GC=F"].iloc[-1])
+            res["cobre"] = float(c["HG=F"].iloc[-1])
+            res["euro"] = float(c["EURUSD=X"].iloc[-1])
+            res["std"] = c["USDCLP=X"].tail(15).std()
     except: pass
+    return res
 
-    # Mejora Turbo para Commodities
-    if engine == "Turbo (Finnhub API)":
-        f_syms = {"oro": "XAUUSD", "cobre": "CPER", "euro": "FX:EURUSD"}
-        for key, sym in f_syms.items():
-            try:
-                r = requests.get(f"https://finnhub.io/api/v1/quote?symbol={sym}&token={FINNHUB_KEY}", timeout=2).json()
-                p = float(r.get('c', 0.0))
-                if p > 0: results[key] = p
-            except: pass
-    return results
-
-# 3. BITÁCORA DUAL CON AUDITORÍA DE LAG
-def save_trade(op, sig_type, p_bot, p_xtb, tp, sl):
-    log_file = f'bitacora_{op.lower()}.csv'
-    new_entry = pd.DataFrame([{
+# 3. LÓGICA DE AUDITORÍA
+def log_real_trade(op, p_bot, p_xtb, lote, resultado):
+    log_file = 'bitacora_real_100k.csv'
+    pd.DataFrame([{
         'Fecha': datetime.now(tz_chile).strftime("%Y-%m-%d %H:%M:%S"),
-        'Operador': op, 'Tipo': sig_type, 'Precio_Bot': p_bot,
-        'Precio_XTB': p_xtb, 'Lag_CLP': round(abs(p_bot - p_xtb), 2),
-        'TP_Sugerido': tp, 'SL_Sugerido': sl
-    }])
-    new_entry.to_csv(log_file, mode='a', index=False, header=not os.path.exists(log_file))
+        'Operador': op, 'Precio_Bot': p_bot, 'Precio_XTB': p_xtb,
+        'Lote': lote, 'Resultado_CLP': resultado
+    }]).to_csv(log_file, mode='a', index=False, header=not os.path.exists(log_file))
 
-# --- SIDEBAR: PANEL DE CONTROL ---
-st.sidebar.title("⚙️ Sentinel Pro v4.5")
-engine_choice = st.sidebar.selectbox("Motor de Datos", ["Turbo (Finnhub API)", "Standard (Yahoo)"])
-op_activo = st.sidebar.radio("Operador actual:", ["Papa", "Axel"])
+# --- UI DASHBOARD ---
+st.title("🛡️ SENTINEL v7.0: ESTRATEGIA $100K")
 
-usd_val = get_usd_price(engine_choice)
-m_data = get_global_data(engine_choice)
+# Latency Check
+t0 = time.time()
+usd_val = fetch_fast_usd()
+lat = int((time.time()-t0)*1000)
+ctx = fetch_market_context()
 
-# ---------------------------------------------------------
-# DASHBOARD: EAGLE EYE GIGANTE
-# ---------------------------------------------------------
-st.title("🚀 Antigravity Pro v4.5.0")
-st.caption(f"📍 Cloud Node: Macul | {hora_chile.strftime('%H:%M:%S')} | Engine: {engine_choice}")
+# 4. EAGLE EYE INTEGRAL
+stress = (usd_val > ctx["df"]["USDCLP=X"].tail(5).mean() and ctx["cobre"] > ctx["df"]["HG=F"].tail(5).mean()) if not ctx["df"].empty else False
+d_color = "#ff4b4b" if stress else "#00ff00"
 
-if usd_val > 0:
+c_eye, c_info = st.columns([3, 1])
+with c_eye:
     st.markdown(f"""
-        <div style="background-color: #1e1e1e; padding: 25px; border-radius: 15px; border-left: 12px solid #00ff00; text-align: center; margin-bottom: 30px;">
-            <h1 style="margin: 0; color: #888; font-size: 1.5rem; letter-spacing: 3px;">USD/CLP ACTUAL</h1>
-            <p style="margin: 0; color: #00ff00; font-size: 7rem; font-weight: bold; line-height: 1;">${usd_val:,.2f}</p>
+        <div style="background-color: #111; padding: 25px; border-radius: 15px; border-left: 10px solid {d_color}; text-align: center;">
+            <h1 style="margin: 0; color: #888; font-size: 1.2rem;">USD/CLP REAL-TIME {"(DIVERGENCIA)" if stress else ""}</h1>
+            <p style="margin: 0; color: {d_color}; font-size: 6.5rem; font-weight: bold;">${usd_val:,.2f}</p>
         </div>
     """, unsafe_allow_html=True)
-else:
-    st.warning("📡 Sincronizando con los mercados globales...")
 
-tab1, tab2 = st.tabs(["📊 Gráfico & Commodities", "🇪🇺 Euro & Gestión"])
+with c_info:
+    vol_lab = "❄️ BAJA" if ctx["std"] < 0.10 else "🟢 OK" if ctx["std"] < 0.25 else "🔥 ALTA"
+    st.metric("VOLATILIDAD", vol_lab)
+    st.metric("LATENCIA", f"{lat}ms", delta="ÓPTIMO" if lat < 600 else "LAG")
+
+# 5. TABS DE ANÁLISIS (Reintegrados)
+tab1, tab2, tab3 = st.tabs(["📊 Gráfico de Confluencia", "🌍 Contexto Global", "📝 Bitácora Real"])
 
 with tab1:
-    c1, c2 = st.columns(2)
-    c1.metric("ORO (XAU/USD)", f"${m_data['oro']:,.2f}")
-    c2.metric("COBRE (HG/CPER)", f"${m_data['cobre']:,.2f}")
-
-    if not m_data["df_hist"].empty:
-        df = m_data["df_hist"]
+    if not ctx["df"].empty:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df.index, y=df["USDCLP=X"], name="Dólar", line=dict(color='#00ff00', width=3)))
-        if "GC=F" in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df["GC=F"], name="Oro", line=dict(color='#ffbf00', dash='dot'), yaxis="y2"))
-        if "HG=F" in df.columns:
-            fig.add_trace(go.Scatter(x=df.index, y=df["HG=F"], name="Cobre", line=dict(color='#ff4b4b', dash='dash'), yaxis="y3"))
-        
-        fig.update_layout(template="plotly_dark", height=480, margin=dict(l=10, r=10, t=10, b=10),
-                          xaxis=dict(domain=[0, 0.8]),
-                          yaxis=dict(title="Dólar", tickfont=dict(color="#00ff00")),
-                          yaxis2=dict(title="Oro", anchor="free", overlaying="y", side="right", position=0.85, tickfont=dict(color="#ffbf00")),
-                          yaxis3=dict(title="Cobre", anchor="free", overlaying="y", side="right", position=0.95, tickfont=dict(color="#ff4b4b")))
+        fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["USDCLP=X"], name="USD", line=dict(color='#00ff00', width=3)))
+        fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["GC=F"], name="Oro", yaxis="y2", line=dict(color='#ffbf00', dash='dot')))
+        fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["HG=F"], name="Cobre", yaxis="y3", line=dict(color='#ff4b4b', dash='dash')))
+        fig.update_layout(template="plotly_dark", height=400, margin=dict(l=5, r=5, t=5, b=5),
+                          yaxis2=dict(anchor="free", overlaying="y", side="right", position=0.85),
+                          yaxis3=dict(anchor="free", overlaying="y", side="right", position=0.95))
         st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
-    st.metric("EUR/USD Actual", f"{m_data['euro']:,.4f}")
-    st.divider()
-    st.subheader("💰 Calculadora de Margen (Capital 50k)")
-    m_verde = (0.01 * 1000 * usd_val) / 100
-    m_super = (0.03 * 1000 * usd_val) / 100
-    st.write(f"Margen Verde (0.01 lotes): **${m_verde:,.0f} CLP**")
-    st.write(f"Margen Súper (0.03 lotes): **${m_super:,.0f} CLP**")
+    col_a, col_b = st.columns(2)
+    col_a.metric("EURO (EUR/USD)", f"{ctx['euro']:.4f}", help="Si el Euro sube, el Dólar global baja")
+    col_b.metric("COBRE (HG)", f"${ctx['cobre']:.4f}")
+    st.info("💡 Recordatorio: Si el Euro y el Cobre suben, la probabilidad de que el Dólar caiga es del 80%.")
 
-# ---------------------------------------------------------
-# LÓGICA DE SEÑALES Y ALARMA BANCARIA
-# ---------------------------------------------------------
-st.divider()
-market_open = 10 <= hora_chile.hour < 13
-# Parámetros de señal para el registro
-s_tp, s_sl, s_type = usd_val + 3.5, usd_val - 2.0, "Super Verde"
+with tab3:
+    st.subheader("Registro de Operación $100k")
+    p_xtb = st.number_input("Precio Real en XTB:", value=float(usd_val), step=0.01)
+    if st.button("💾 Guardar Trade Real"):
+        log_real_trade("Axel/Papa", usd_val, p_xtb, 0.01, (usd_val-p_xtb)*1000)
+        st.success("Operación registrada en bitácora.")
 
-if market_open and usd_val > 0:
-    conf_u, conf_g = 0.78, 0.72 # Simulación de señal activa
-    if conf_u > 0.75 and conf_g > 0.70:
-        st.info(f"💎 SEÑAL {s_type.upper()} DETECTADA: **0.03 Lotes**")
-        col1, col2, col3 = st.columns([2,2,1])
-        col1.success(f"📈 TAKE PROFIT: {s_tp:.2f}")
-        col2.error(f"🛡️ STOP LOSS: {s_sl:.2f}")
-        
-        if col3.button("STOP 🔇"):
-            st.session_state.alarma_activa = False
-            st.rerun()
-            
-        if st.session_state.alarma_activa:
-            st.components.v1.html("""<audio autoplay loop><source src="https://www.soundjay.com/buttons/beep-01a.mp3" type="audio/mp3"></audio>""", height=0)
-    else:
-        st.warning("🟡 MODO SENTINELA: Monitoreando correlaciones Dólar/Oro...")
-else:
-    st.error(f"🔴 MERCADO BANCARIO CERRADO | Abre 10:00 AM")
-    st.session_state.alarma_activa = True # Auto-reset para mañana
+# 6. PANEL DE RIESGO FIJO (Sidebar)
+st.sidebar.header("🛡️ Parámetros $100k")
+st.sidebar.write("Lote: **0.01**")
+st.sidebar.success("🎯 Meta: +$4.000")
+st.sidebar.error("🛡️ SL: -$2.000")
 
-# ---------------------------------------------------------
-# SIDEBAR: REGISTRO Y AUDITORÍA DE LAG
-# ---------------------------------------------------------
-st.sidebar.divider()
-st.sidebar.subheader("📝 Auditoría de Ejecución")
-p_real_xtb = st.sidebar.number_input("Precio Real en XTB:", value=float(usd_val), step=0.01)
-
-if st.sidebar.button(f"💾 Guardar Trade {op_activo}"):
-    save_trade(op_activo, s_type, usd_val, p_real_xtb, s_tp, s_sl)
-    st.toast(f"✅ Trade de {op_activo} registrado en la nube.")
+if st.sidebar.checkbox("Activar Calculador de Trade"):
+    entry = st.sidebar.number_input("Precio Entrada:", value=usd_val)
+    neta = (usd_val - entry) * 1000
+    st.sidebar.metric("Ganancia/Pérdida", f"${neta:,.0f} CLP", delta=f"{usd_val-entry:.2f} CLP")
+    if neta <= -2000: st.sidebar.warning("⚠️ ¡CIERRA SL!")
