@@ -4,119 +4,132 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+import os
 from datetime import datetime
 import pytz
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# 1. SETUP PROFESIONAL
-st.set_page_config(page_title="SENTINEL v7.6 - REAL", layout="wide", page_icon="🛡️")
+# 1. SETUP DE ALTA DISPONIBILIDAD
+st.set_page_config(page_title="SENTINEL v8.1 - AUDITED", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=3000, key="datarefresh") 
 
 FINNHUB_KEY = "d5fq0d9r01qnjhodsn8gd5fq0d9r01qnjhodsn90"
 tz_chile = pytz.timezone('America/Santiago')
-hora_chile = datetime.now(tz_chile)
 
-# 2. MOTOR DE DATOS CON FAILOVER INTELIGENTE
+# 2. MOTOR DE DATOS (Optimizado)
 @st.cache_data(ttl=2)
-def fetch_fast_usd():
+def fetch_data_layer():
+    # A. Intentamos obtener precio rápido (Finnhub)
+    fast_price = 0.0
+    latency = 0
+    t0 = time.time()
     try:
-        r = requests.get(f"https://finnhub.io/api/v1/quote?symbol=FX:USDCLP&token={FINNHUB_KEY}", timeout=1.5).json()
-        return float(r.get('c', 0.0))
-    except: return 0.0
+        r = requests.get(f"https://finnhub.io/api/v1/quote?symbol=FX:USDCLP&token={FINNHUB_KEY}", timeout=1.0).json()
+        fast_price = float(r.get('c', 0.0))
+        latency = int((time.time() - t0) * 1000)
+    except: 
+        latency = 9999
 
-@st.cache_data(ttl=30)
-def fetch_market_context():
-    res = {"oro": 0.0, "cobre": 0.0, "euro": 0.0, "std": 0.0, "df": pd.DataFrame()}
+    # B. Obtenemos contexto pesado (Yahoo) - SIEMPRE necesario para Pearson y Gráficos
+    context = {"oro": 0.0, "cobre": 0.0, "euro": 0.0, "df": pd.DataFrame(), "source": "FINNHUB"}
     try:
         raw = yf.download(["USDCLP=X", "GC=F", "HG=F", "EURUSD=X"], period="1d", interval="1m", progress=False)
         if not raw.empty:
             c = raw['Close'].ffill()
-            res["df"] = c
-            res["oro"] = float(c["GC=F"].iloc[-1])
-            res["cobre"] = float(c["HG=F"].iloc[-1])
-            res["euro"] = float(c["EURUSD=X"].iloc[-1])
-            res["std"] = c["USDCLP=X"].tail(15).std()
+            context["df"] = c
+            context["oro"] = float(c["GC=F"].iloc[-1])
+            context["cobre"] = float(c["HG=F"].iloc[-1])
+            context["euro"] = float(c["EURUSD=X"].iloc[-1])
+            
+            # C. Lógica de Failover: Si Finnhub falló, usamos Yahoo
+            if fast_price <= 0:
+                fast_price = float(c["USDCLP=X"].iloc[-1])
+                context["source"] = "⚠️ YAHOO (FAILOVER)"
     except: pass
-    return res
+    
+    return fast_price, context, latency
 
-# 3. MÓDULO DE CORRELACIÓN DUAL
-def get_correlations(df):
-    if df.empty or len(df) < 10: return 0.0, 0.0
-    c_cu = df['USDCLP=X'].tail(20).corr(df['HG=F'].tail(20))
-    c_au = df['USDCLP=X'].tail(20).corr(df['GC=F'].tail(20))
-    return c_cu, c_au
+# 3. BITÁCORA DE TRANSACCIONES (Reintegrado)
+def log_trade(action, price, pnl_est):
+    file_name = 'bitacora_100k.csv'
+    data = {
+        'Fecha': datetime.now(tz_chile).strftime("%Y-%m-%d %H:%M:%S"),
+        'Accion': action,
+        'Precio': price,
+        'PnL_Estimado': pnl_est
+    }
+    pd.DataFrame([data]).to_csv(file_name, mode='a', index=False, header=not os.path.exists(file_name))
 
-# --- PROCESAMIENTO ---
-t0 = time.time()
-usd_val = fetch_fast_usd()
-ctx = fetch_market_context()
-lat = int((time.time()-t0)*1000)
+# --- EJECUCIÓN ---
+usd_val, ctx, lat = fetch_data_layer()
 
-if usd_val <= 0 and not ctx["df"].empty:
-    usd_val = float(ctx["df"]["USDCLP=X"].iloc[-1])
-    lat_status = "⚠️ FAILOVER"
-else: lat_status = "🟢 ÓPTIMO"
+# 4. EL CEREBRO DE DECISIÓN (Ahora incluye Oro)
+def get_decision_semaphore(df, trend_cu, trend_au):
+    if df.empty or len(df) < 15: return "⌛ INICIALIZANDO...", "#555"
+    
+    # Correlaciones de Pearson (Últimos 20 min)
+    corr_cu = df['USDCLP=X'].tail(20).corr(df['HG=F'].tail(20))
+    corr_au = df['USDCLP=X'].tail(20).corr(df['GC=F'].tail(20))
+    
+    # Lógica de Seguridad
+    if corr_cu > 0.20: return "⚠️ STRESS: DIVERGENCIA (Cobre sube, Dólar sube)", "#ff9900"
+    
+    # Señales de Entrada
+    # Súper Verde: Cobre baja (negativo para CLP) + Correlación fuerte + Oro no molesta
+    trend_cu_val = trend_cu - df['HG=F'].tail(10).mean()
+    
+    if corr_cu < -0.60 and trend_cu_val < 0: 
+        return "💎 SÚPER VERDE (COMPRA)", "#00ff00"
+    
+    if corr_cu < -0.60 and trend_cu_val > 0:
+        return "🔥 SÚPER ROJO (VENTA)", "#ff4b4b"
+        
+    return "⚖️ ZONA NEUTRA / ESPERA", "#3399ff"
 
-corr_cu, corr_au = get_correlations(ctx["df"])
+sig_text, sig_color = get_decision_semaphore(ctx["df"], ctx["cobre"], ctx["oro"])
 
-# --- INTERFAZ BATTLE MODE ---
-st.title("🛡️ SENTINEL v7.6: REAL MONEY MONITOR")
+# --- INTERFAZ ---
+st.title("🛡️ SENTINEL v8.1: AUDITED")
 
-# Métricas Superiores
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("USD/CLP", f"${usd_val:,.2f}", delta_color="inverse")
-m2.metric("CORR. COBRE", f"{corr_cu:.2f}", help="Ideal: < -0.70")
-m3.metric("CORR. ORO", f"{corr_au:.2f}", help="Ideal: < -0.70")
-m4.metric("LATENCIA", f"{lat}ms", delta=lat_status)
-
-# Eagle Eye Principal
-stress = (corr_cu > 0.20 or corr_au > 0.20) # Alerta si hay correlación positiva (anomalía)
-d_color = "#ff4b4b" if stress else "#00ff00"
+# Semáforo
 st.markdown(f"""
-    <div style="background-color: #111; padding: 20px; border-radius: 15px; border-left: 10px solid {d_color}; text-align: center;">
-        <h1 style="margin: 0; color: #888; font-size: 1.2rem;">SISTEMA DE CONFLUENCIA {"(STRESS DETECTADO)" if stress else ""}</h1>
-        <p style="margin: 0; color: {d_color}; font-size: 5.5rem; font-weight: bold;">${usd_val:,.2f}</p>
+    <div style="background-color: {sig_color}; padding: 20px; border-radius: 10px; text-align: center;">
+        <h2 style="margin:0; color:black; font-weight:bold;">{sig_text}</h2>
     </div>
 """, unsafe_allow_html=True)
 
-# Gráfico Triple Eje (USD, Oro, Cobre)
+# Métricas Principales
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("USD/CLP", f"${usd_val:,.2f}", delta=ctx["source"])
+if not ctx["df"].empty:
+    corr_c = ctx['df']['USDCLP=X'].tail(20).corr(ctx['df']['HG=F'].tail(20))
+    corr_g = ctx['df']['USDCLP=X'].tail(20).corr(ctx['df']['GC=F'].tail(20))
+    k2.metric("Corr COBRE", f"{corr_c:.2f}")
+    k3.metric("Corr ORO", f"{corr_g:.2f}")
+k4.metric("Latencia", f"{lat}ms")
+
+# Gráfico
 if not ctx["df"].empty:
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["USDCLP=X"], name="USD", line=dict(color='#00ff00', width=3)))
-    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["GC=F"], name="Oro", yaxis="y2", line=dict(color='#ffbf00', dash='dot')))
-    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["HG=F"], name="Cobre", yaxis="y3", line=dict(color='#ff4b4b', dash='dash')))
-    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=5, r=5, t=5, b=5),
-                      yaxis2=dict(anchor="free", overlaying="y", side="right", position=0.85),
-                      yaxis3=dict(anchor="free", overlaying="y", side="right", position=0.95))
+    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["USDCLP=X"], name="USD", line=dict(color='#00ff00', width=2)))
+    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["HG=F"], name="Cobre", yaxis="y2", line=dict(color='#ff4b4b', dash='dot')))
+    fig.update_layout(template="plotly_dark", height=350, margin=dict(l=0,r=0,t=0,b=0),
+                      yaxis2=dict(anchor="free", overlaying="y", side="right", position=1))
     st.plotly_chart(fig, use_container_width=True)
 
-# CALCULADORA "FLIGHT CONTROL" $100K
-st.divider()
-st.subheader("🕹️ Monitor de Operación en Vivo")
-c_calc1, c_calc2 = st.columns([1, 2])
+# 5. GESTIÓN DE ORDEN + LOGS (Sidebar)
+st.sidebar.header("🕹️ Operación Real")
+entry = st.sidebar.number_input("Entrada:", value=usd_val)
+direction = st.sidebar.selectbox("Dirección", ["COMPRA", "VENTA"])
 
-with c_calc1:
-    entry_price = st.number_input("Precio de Entrada XTB:", value=usd_val, format="%.2f")
-    tipo_op = st.radio("Dirección:", ["COMPRA (Long)", "VENTA (Short)"], horizontal=True)
-
-with c_calc2:
-    if tipo_op == "COMPRA (Long)":
-        pnl = (usd_val - entry_price) * 1000
-        dist_meta = entry_price + 4.00
-        dist_sl = entry_price - 2.00
-    else:
-        pnl = (entry_price - usd_val) * 1000
-        dist_meta = entry_price - 4.00
-        dist_sl = entry_price + 2.00
+if st.sidebar.checkbox("🔴 TRADE ACTIVO"):
+    pnl = (usd_val - entry) * 1000 if direction == "COMPRA" else (entry - usd_val) * 1000
+    st.sidebar.metric("PnL Vivo", f"${pnl:,.0f}", delta_color="normal")
     
-    pnl_color = "green" if pnl >= 0 else "red"
-    st.markdown(f"""
-        <div style="background-color: #1a1a1a; padding: 15px; border-radius: 10px; border: 1px solid #333;">
-            <h3 style="margin: 0; color: {pnl_color}; text-align: center;">PnL: ${pnl:,.0f} CLP</h3>
-            <div style="display: flex; justify-content: space-between; margin-top: 10px;">
-                <span style="color: #00ff00;">🎯 Meta ($4.000) en: <b>${dist_meta:.2f}</b></span>
-                <span style="color: #ff4b4b;">🛡️ Stop Loss ($2.000) en: <b>${dist_sl:.2f}</b></span>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+    if pnl <= -2000: st.sidebar.error("🛑 STOP LOSS (-$2k)")
+    elif pnl >= 4000: st.sidebar.success("✅ TAKE PROFIT (+$4k)")
+    
+    if st.sidebar.button("💾 Guardar en Bitácora"):
+        log_trade(direction, entry, pnl)
+        st.sidebar.info("Guardado.")
