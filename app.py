@@ -11,52 +11,68 @@ import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# SENTINEL v9.5: THE TREND HUNTER
-# Híbrido: Correlación + DXY + Tendencia
+# SENTINEL v9.5.1: TREND HUNTER + MONOLITH
+# Proyecto: GitHub (USD/CLP) - Independiente
 # ==========================================
 
-st.set_page_config(page_title="SENTINEL v9.5 - TREND HUNTER", layout="wide", page_icon="🏹")
+st.set_page_config(page_title="SENTINEL v9.5.1 - MONOLITH", layout="wide", page_icon="🏹")
 
-# 12 segundos para estabilidad de API y procesamiento de múltiples sensores
+# 12 segundos: Equilibrio perfecto entre RT y límites de API Free (5 RPM)
 st_autorefresh(interval=12000, key="datarefresh") 
 
 TD_KEY = "5028b1741eef4937a359ed068f95296d"
 tz_chile = pytz.timezone('America/Santiago')
 
+# 1. CAPA DE DATOS MULTI-SENSOR
 @st.cache_data(ttl=5)
 def fetch_data_v95():
     fast_price, latency, source = 0.0, 0, "TWELVE DATA (RT)"
     t0 = time.time()
     
-    # A. Precio RT USD/CLP
+    # A. Precio RT USD/CLP (Twelve Data)
     try:
         url = f"https://api.twelvedata.com/price?symbol=USD/CLP&apikey={TD_KEY}"
         r_raw = requests.get(url, timeout=3.5)
         if r_raw.status_code == 200:
             fast_price = float(r_raw.json().get("price", 0.0))
             latency = int((time.time() - t0) * 1000)
-    except: fast_price, source = 0.0, "API ERROR"
+        else: source = f"API {r_raw.status_code}"
+    except: fast_price, source = 0.0, "CONN ERROR"
 
-    ctx = {"oro": 0.0, "cobre": 0.0, "dxy": 0.0, "df": pd.DataFrame(), "source": source}
+    ctx = {"oro": 0, "cobre": 0, "dxy": 0, "euro": 0, "df": pd.DataFrame(), "source": source, "spread": 0.45}
     
-    # B. Sensores Globales (Añadimos DXY: DX-Y.NYB)
+    # B. Sensores Globales (Yahoo) - Incluye DXY para Tendencia
     try:
-        raw = yf.download(["USDCLP=X", "GC=F", "HG=F", "DX-Y.NYB"], period="2d", interval="1m", progress=False)
+        raw = yf.download(["USDCLP=X", "GC=F", "HG=F", "DX-Y.NYB", "EURUSD=X"], period="2d", interval="1m", progress=False)
         if not raw.empty:
             c = raw['Close'].ffill().bfill()
             ctx["df"] = c
             ctx["oro"] = float(c["GC=F"].iloc[-1])
             ctx["cobre"] = float(c["HG=F"].iloc[-1])
-            ctx["dxy"] = float(c["DX-Y.NYB"].iloc[-1]) # Sensor DXY
+            ctx["dxy"] = float(c["DX-Y.NYB"].iloc[-1])
+            ctx["euro"] = float(c["EURUSD=X"].iloc[-1])
             
-            if fast_price <= 1.0: fast_price = float(c["USDCLP=X"].iloc[-1])
+            if fast_price <= 1.0:
+                fast_price = float(c["USDCLP=X"].iloc[-1])
+                ctx["source"] = "⚠️ YAHOO (FAILOVER)"
+            
+            # Spread Estimado (v9.0 logic)
+            h, l = raw['High']["USDCLP=X"].iloc[-1], raw['Low']["USDCLP=X"].iloc[-1]
+            ctx["spread"] = 0.40 + ((h - l) * 0.1)
     except: ctx["source"] = "⚠️ DATA ERROR"
     
     return fast_price, ctx, latency
 
+# 2. BITÁCORA DE OPERACIONES
+def log_trade(action, price, pnl_est):
+    file_name = 'bitacora_real_100k.csv'
+    data = {'Fecha': datetime.now(tz_chile).strftime("%Y-%m-%d %H:%M:%S"), 'Accion': action, 'Precio': price, 'PnL': pnl_est}
+    pd.DataFrame([data]).to_csv(file_name, mode='a', index=False, header=not os.path.exists(file_name))
+
+# --- EJECUCIÓN ---
 usd_val, ctx, lat = fetch_data_v95()
 
-# MOTOR DE DECISIÓN HÍBRIDO v9.5
+# 3. MOTOR DE DECISIÓN HÍBRIDO (Cobre + DXY)
 def get_hybrid_verdict(df, rt_cobre):
     if df.empty or len(df) < 20: return "⌛ INICIALIZANDO...", "#555", False, 0.0, 0.0
     
@@ -64,57 +80,73 @@ def get_hybrid_verdict(df, rt_cobre):
     s_cu = df['HG=F'].tail(25).ffill()
     s_dxy = df['DX-Y.NYB'].tail(25).ffill()
     
-    corr_cu = s_usd.corr(s_cu)
-    corr_dxy = s_usd.corr(s_dxy)
+    c_cu = s_usd.corr(s_cu)
+    c_dxy = s_usd.corr(s_dxy)
     
-    # 1. LÓGICA DE CAUSALIDAD (Cobre - Modo Pesado)
+    # A. Prioridad 1: Correlación de Cobre (Modo Arbitraje Pesado)
     avg_cu = s_cu.tail(10).mean()
     val_cu = rt_cobre - avg_cu
     
-    if corr_cu <= -0.58:
-        if val_cu < 0: return "💎 SÚPER VERDE (COMPRA)", "#00ff00", True, corr_cu, corr_dxy
-        if val_cu > 0: return "🔥 SÚPER ROJO (VENTA)", "#ff4b4b", True, corr_cu, corr_dxy
+    if c_cu <= -0.58:
+        if val_cu < 0: return "💎 SÚPER VERDE (COMPRA)", "#00ff00", True, c_cu, c_dxy
+        if val_cu > 0: return "🔥 SÚPER ROJO (VENTA)", "#ff4b4b", True, c_cu, c_dxy
 
-    # 2. LÓGICA DE TENDENCIA (DXY - Modo Ligero)
-    # Si el Dólar Global acompaña el movimiento, ignoramos el Stress del Cobre
-    if corr_dxy >= 0.70:
-        dxy_trend = s_dxy.iloc[-1] - s_dxy.tail(10).mean()
-        if dxy_trend < -0.05: return "📉 VENTA POR TENDENCIA (DXY)", "#ff4b4b", True, corr_cu, corr_dxy
-        if dxy_trend > 0.05: return "📈 COMPRA POR TENDENCIA (DXY)", "#00ff00", True, corr_cu, corr_dxy
+    # B. Prioridad 2: Tendencia DXY (Modo Trend Hunter)
+    # Si el Dólar Global confirma la caída, ignoramos el Stress del Cobre
+    if c_dxy >= 0.75:
+        dxy_delta = s_dxy.iloc[-1] - s_dxy.tail(10).mean()
+        if dxy_delta < -0.04: return "📉 VENTA POR TENDENCIA (DXY)", "#ff4b4b", True, c_cu, c_dxy
+        if dxy_delta > 0.04: return "📈 COMPRA POR TENDENCIA (DXY)", "#00ff00", True, c_cu, c_dxy
 
-    if corr_cu > 0.20: return "⚠️ STRESS / DIVERGENCIA", "#ff9900", False, corr_cu, corr_dxy
-    return "⚖️ NEUTRO / ESPERA", "#3399ff", False, corr_cu, corr_dxy
+    # C. Estado de Stress
+    if c_cu > 0.20: return "⚠️ STRESS / DIVERGENCIA", "#ff9900", False, c_cu, c_dxy
+    
+    return "⚖️ NEUTRO / ESPERA", "#3399ff", False, c_cu, c_dxy
 
-sig_text, sig_color, play_audio, c_cu, c_dxy = get_hybrid_verdict(ctx["df"], ctx["cobre"])
+sig_text, sig_color, play_audio, corr_cu, corr_dxy = get_hybrid_verdict(ctx["df"], ctx["cobre"])
 
 # --- DASHBOARD ---
-st.title("🛡️ SENTINEL v9.5: TREND HUNTER")
+st.title("🛡️ SENTINEL v9.5.1: TREND HUNTER")
 
 if play_audio:
     st.components.v1.html(f"""<audio autoplay><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mp3"></audio>""", height=0)
 
-st.markdown(f"""<div style="background-color: {sig_color}; padding: 25px; border-radius: 15px; text-align: center;">
-    <h1 style="margin: 0; color: #000; font-size: 3rem;">{sig_text}</h1></div>""", unsafe_allow_html=True)
+st.markdown(f"""<div style="background-color: {sig_color}; padding: 25px; border-radius: 15px; text-align: center; margin-bottom: 20px;">
+    <h1 style="margin: 0; color: #000; font-size: 3rem; font-weight: bold;">{sig_text}</h1></div>""", unsafe_allow_html=True)
 
-k1, k2, k3, k4, k5 = st.columns(5)
+# 7 Columnas: Reintegramos Euro y Spread que estaban fuera
+k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
 k1.metric("USD/CLP", f"${usd_val:,.2f}", delta=ctx["source"])
-k2.metric("Corr Cobre", f"{c_cu:.2f}", delta="OK" if c_cu <= -0.58 else "OUT")
-k3.metric("Dólar Global (DXY)", f"{ctx['dxy']:.2f}", delta=f"Corr: {c_dxy:.2f}")
-k4.metric("Cobre (HG=F)", f"${ctx['cobre']:.2f}")
-k5.metric("ORO (GC=F)", f"${ctx['oro']:,.1f}")
+k2.metric("Corr Cu", f"{corr_cu:.2f}", delta="OK" if corr_cu <= -0.58 else "OUT")
+k3.metric("Dólar Global", f"{ctx['dxy']:.2f}", delta=f"Corr: {corr_dxy:.2f}")
+k4.metric("Cobre (HG)", f"${ctx['cobre']:.2f}")
+k5.metric("ORO (GC)", f"${ctx['oro']:,.1f}")
+k6.metric("EURO/USD", f"{ctx['euro']:.4f}")
+k7.metric("Spread Est.", f"${ctx['spread']:.2f}")
 
-# Gráfico
+# Gráfico Triádico (Dólar vs DXY vs Cobre)
 if not ctx["df"].empty:
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["USDCLP=X"], name="USD", line=dict(color='#00ff00', width=2)))
-    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["DX-Y.NYB"], name="DXY", yaxis="y2", line=dict(color='#3399ff')))
-    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0,r=0,t=10,b=0), yaxis2=dict(overlaying="y", side="right"))
+    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["USDCLP=X"], name="USD/CLP", line=dict(color='#00ff00', width=2.5)))
+    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["DX-Y.NYB"], name="DXY", yaxis="y2", line=dict(color='#3399ff', dash='dot')))
+    fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["HG=F"], name="Cobre", yaxis="y3", line=dict(color='#ff4b4b', dash='dash')))
+    
+    fig.update_layout(template="plotly_dark", height=420, margin=dict(l=0,r=0,t=10,b=0),
+        yaxis2=dict(anchor="free", overlaying="y", side="right", position=0.98),
+        yaxis3=dict(anchor="free", overlaying="y", side="right", position=0.93),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig, use_container_width=True)
 
 # Sidebar
-st.sidebar.header("🕹️ Operación Híbrida")
-st.sidebar.warning("Modo Tendencia: Activa si Corr DXY > 0.70")
-entry = st.sidebar.number_input("Precio Entrada:", value=usd_val)
-if st.sidebar.checkbox("🔴 PnL VIVO"):
-    pnl = (usd_val - entry) * 1000
-    st.sidebar.metric("PnL", f"${pnl:,.0f} CLP")
+st.sidebar.header("🕹️ Operación Real ($100k)")
+st.sidebar.info(f"Modo Híbrido: Correlación + Inercia DXY")
+entry = st.sidebar.number_input("Precio Entrada:", value=usd_val, step=0.01)
+op_side = st.sidebar.radio("Dirección:", ["COMPRA", "VENTA"], horizontal=True)
+
+if st.sidebar.checkbox("🔴 MOSTRAR PnL VIVO"):
+    pnl = (usd_val - entry) * 1000 if op_side == "COMPRA" else (entry - usd_val) * 1000
+    st.sidebar.metric("PnL VIVO", f"${pnl:,.0f} CLP", delta=f"{usd_val-entry:.2f}")
+    if pnl <= -2000: st.sidebar.error("🛑 STOP LOSS (-$2.000)")
+    if st.sidebar.button("💾 Guardar en Bitácora"):
+        log_trade(op_side, entry, pnl)
+        st.sidebar.toast("Operación Registrada")
