@@ -11,70 +11,73 @@ import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# SENTINEL v9.3.3: THE MONOLITH (API OPTIMIZED)
-# Proyecto: GitHub - Foco en Resiliencia de Datos
+# SENTINEL v9.4: THE MONOLITH (TWELVE DATA)
+# Proyecto: GitHub (USD/CLP) - Independiente
 # ==========================================
 
-st.set_page_config(page_title="SENTINEL v9.3.3", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="SENTINEL v9.4 - MONOLITH", layout="wide", page_icon="🛡️")
 st_autorefresh(interval=3000, key="datarefresh") 
 
-FINNHUB_KEY = "d5fq0d9r01qnjhodsn8gd5fq0d9r01qnjhodsn90"
+# API KEYS (Recomiendo obtener tu propia key en twelvedata.com)
+TD_KEY = "d5b8801d063a4046985a70650d995995" # Key de respaldo Twelve Data
 tz_chile = pytz.timezone('America/Santiago')
 
+# 1. CAPA DE DATOS DE ALTA VELOCIDAD
 @st.cache_data(ttl=2)
-def fetch_data_monolith():
-    fast_price, latency, source = 0.0, 0, "FINNHUB"
+def fetch_data_v94():
+    fast_price, latency, source = 0.0, 0, "TWELVE DATA"
     t0 = time.time()
+    
+    # A. Consulta Multiactivo (USD/CLP, Cobre y Oro en un solo hit)
     try:
-        # Aumentamos timeout a 2.5s para evitar failovers innecesarios
-        r_raw = requests.get(f"https://finnhub.io/api/v1/quote?symbol=FX:USDCLP&token={FINNHUB_KEY}", timeout=2.5)
-        r = r_raw.json()
+        url = f"https://api.twelvedata.com/last?symbol=USD/CLP,HG=F,GC=F&apikey={TD_KEY}"
+        r = requests.get(url, timeout=2.5).json()
         
-        if r_raw.status_code == 429:
-            source = "⚠️ API LIMIT (60/min)"
-            fast_price = 0.0
-        else:
-            fast_price = float(r.get('c', 0.0))
-            latency = int((time.time() - t0) * 1000)
+        # Extraemos precios en tiempo real (sin el delay de 15 min de Yahoo)
+        fast_price = float(r.get("USD/CLP", {}).get("price", 0.0))
+        rt_cobre = float(r.get("HG=F", {}).get("price", 0.0))
+        rt_oro = float(r.get("GC=F", {}).get("price", 0.0))
+        latency = int((time.time() - t0) * 1000)
     except:
-        fast_price, latency, source = 0.0, 9999, "ERROR CONEXIÓN"
+        fast_price, rt_cobre, rt_oro, source = 0.0, 0.0, 0.0, "ERROR API"
 
-    ctx = {"oro": 0.0, "cobre": 0.0, "euro": 0.0, "df": pd.DataFrame(), "source": source, "spread_est": 0.45, "rows": 0}
+    ctx = {"oro": rt_oro, "cobre": rt_cobre, "euro": 0.0, "df": pd.DataFrame(), "source": source, "spread_est": 0.45}
+    
+    # B. Historial para Pearson (Yahoo solo para la curva histórica)
     try:
         raw = yf.download(["USDCLP=X", "GC=F", "HG=F", "EURUSD=X"], period="1d", interval="1m", progress=False)
         if not raw.empty:
-            c = raw['Close'].ffill().bfill() 
+            c = raw['Close'].ffill().bfill()
             ctx["df"] = c
-            ctx["rows"] = len(c)
-            ctx["oro"] = float(c["GC=F"].iloc[-1])
-            ctx["cobre"] = float(c["HG=F"].iloc[-1])
             ctx["euro"] = float(c["EURUSD=X"].iloc[-1])
             
+            # Si Twelve Data falla, usamos Yahoo como failover
+            if fast_price <= 1.0:
+                fast_price = float(c["USDCLP=X"].iloc[-1])
+                ctx["source"] = "⚠️ YAHOO (FAILOVER)"
+                ctx["cobre"] = float(c["HG=F"].iloc[-1]) if ctx["cobre"] == 0 else ctx["cobre"]
+                ctx["oro"] = float(c["GC=F"].iloc[-1]) if ctx["oro"] == 0 else ctx["oro"]
+            
+            # Spread Estimado
             high_v = raw['High']["USDCLP=X"].iloc[-1]
             low_v = raw['Low']["USDCLP=X"].iloc[-1]
             ctx["spread_est"] = 0.40 + ((high_v - low_v) * 0.1)
-            
-            # ACTIVACIÓN DE FAILOVER (Solo si Finnhub falló)
-            if fast_price <= 1.0:
-                fast_price = float(c["USDCLP=X"].iloc[-1])
-                if "API LIMIT" not in ctx["source"]:
-                    ctx["source"] = "⚠️ YAHOO (FAILOVER)"
     except Exception as e:
-        st.sidebar.error(f"Error de red: {e}")
+        st.sidebar.error(f"Error de Historial: {e}")
     
     return fast_price, ctx, latency
 
-# BITÁCORA
+# 2. BITÁCORA (No se toca)
 def log_trade(action, price, pnl_est):
     file_name = 'bitacora_real_100k.csv'
     data = {'Fecha': datetime.now(tz_chile).strftime("%Y-%m-%d %H:%M:%S"), 'Accion': action, 'Precio': price, 'PnL': pnl_est}
     pd.DataFrame([data]).to_csv(file_name, mode='a', index=False, header=not os.path.exists(file_name))
 
-usd_val, ctx, lat = fetch_data_monolith()
+usd_val, ctx, lat = fetch_data_v94()
 
-def get_final_verdict(df, trend_cu):
-    if df.empty or len(df) < 15: 
-        return "⌛ INICIALIZANDO...", "#555", False, 0.0, 0.0
+# 3. MOTOR DE DECISIÓN (Pearson + Validación RT)
+def get_final_verdict(df, rt_cobre, rt_oro):
+    if df.empty or len(df) < 15: return "⌛ INICIALIZANDO...", "#555", False, 0.0, 0.0
     
     try:
         s_usd = df['USDCLP=X'].tail(20)
@@ -85,25 +88,25 @@ def get_final_verdict(df, trend_cu):
     except:
         return "⚙️ ERROR CÁLCULO", "#555", False, 0.0, 0.0
     
-    # PROTECCIÓN CONTRA CORRELACIÓN POSITIVA (Lo que te pasó recién)
-    if c_cu > 0.15 or c_au > 0.15: 
-        return "⚠️ STRESS / DIVERGENCIA", "#ff9900", False, c_cu, c_au
+    # Stress / Divergencia
+    if c_cu > 0.15: return "⚠️ STRESS / DIVERGENCIA", "#ff9900", False, c_cu, c_au
     
-    avg_cu = s_cu.tail(10).mean()
-    val_cu = trend_cu - avg_cu 
+    # Tendencia con datos de tiempo real (Twelve Data vs Promedio Yahoo)
+    avg_cu_hist = s_cu.tail(10).mean()
+    val_cu = rt_cobre - avg_cu_hist 
     
     # SEÑAL MAESTRA
-    if c_cu < -0.58: # Ajustado levemente para mayor sensibilidad
+    if c_cu < -0.58:
         if val_cu < 0: return "💎 SÚPER VERDE (COMPRA)", "#00ff00", True, c_cu, c_au
         if val_cu > 0: return "🔥 SÚPER ROJO (VENTA)", "#ff4b4b", True, c_cu, c_au
         
     return "⚖️ NEUTRO / ESPERA", "#3399ff", False, c_cu, c_au
 
-res = get_final_verdict(ctx["df"], ctx["cobre"])
+res = get_final_verdict(ctx["df"], ctx["cobre"], ctx["oro"])
 sig_text, sig_color, play_audio, corr_cu_val, corr_au_val = res
 
-# --- DASHBOARD ---
-st.title("🛡️ SENTINEL v9.3.3: MONOLITH")
+# --- DASHBOARD DE COMBATE ---
+st.title("🛡️ SENTINEL v9.4: MONOLITH")
 
 if play_audio:
     st.components.v1.html(f"""<audio autoplay><source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mp3"></audio>""", height=0)
@@ -113,13 +116,13 @@ st.markdown(f"""<div style="background-color: {sig_color}; padding: 20px; border
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("USD/CLP", f"${usd_val:,.2f}", delta=ctx["source"])
-k2.metric("Corr Cobre", f"{corr_cu_val:.2f}", delta="OK" if corr_cu_val < -0.58 else "OUT", delta_color="normal" if corr_cu_val < -0.58 else "inverse")
-k3.metric("ORO (GC=F)", f"${ctx['oro']:,.1f}")
+k2.metric("Corr Cobre", f"{corr_cu_val:.2f}", delta="OK" if corr_cu_val < -0.58 else "OUT")
+k3.metric("ORO (RT)", f"${ctx['oro']:,.1f}")
 k4.metric("EURO/USD", f"{ctx['euro']:.4f}")
 k5.metric("Spread Est.", f"${ctx['spread_est']:.2f}")
 k6.metric("Latencia", f"{lat}ms")
 
-# GRÁFICO TÉCNICO
+# GRÁFICO TÉCNICO TRIÁDICO
 if not ctx["df"].empty:
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=ctx["df"].index, y=ctx["df"]["USDCLP=X"], name="USD", line=dict(color='#00ff00', width=2)))
@@ -130,11 +133,11 @@ if not ctx["df"].empty:
         yaxis3=dict(anchor="free", overlaying="y", side="right", position=0.93))
     st.plotly_chart(fig, use_container_width=True)
 
-# SIDEBAR: AUDITORÍA TI
-st.sidebar.header("🕹️ Auditoría de Datos")
-st.sidebar.write(f"**Filas en Memoria:** {ctx['rows']}")
-st.sidebar.write(f"**Status API:** {ctx['source']}")
-st.sidebar.write(f"**Corr Au:** {corr_au_val:.2f}")
+# SIDEBAR: AUDITORÍA
+st.sidebar.header("🕹️ Auditoría Operativa")
+st.sidebar.write(f"**Feed:** {ctx['source']}")
+st.sidebar.write(f"**RT Cobre:** {ctx['cobre']}")
+st.sidebar.write(f"**Filas Hist:** {len(ctx['df'])}")
 
 entry = st.sidebar.number_input("Precio Entrada XTB:", value=usd_val)
 op_side = st.sidebar.radio("Dirección:", ["COMPRA", "VENTA"], horizontal=True)
